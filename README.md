@@ -17,6 +17,14 @@ git submodule update
 ```
 ☆[jsonからcsvに変換]　---> [csvからmodelを作成] --> [modelを用いて目標距離から速度を求める]
 ```
+### 簡単ステップ
+以下のコマンドを入力すれば解析できます（オプションなどはついていない）
+```bash
+python3 launch-model.py convert trials.jsonl
+python3 launch-model.py fit out/shots.csv
+python3 launch-model.py solve --distance <target distance>
+```
+
 
 ### step1 jsonからcsvに変換 (convert)
 ```bash
