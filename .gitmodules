@@ -1,3 +1,6 @@
 [submodule "shot-trial-log"]
 	path = shot-trial-log
 	url = https://github.com/tmcit-ararobo-2026a/shot-trial-log.git
+[submodule "logs/shot-trial-log"]
+	path = logs/shot-trial-log
+	url = https://github.com/tmcit-ararobo-2026a/shot-trial-log.git
