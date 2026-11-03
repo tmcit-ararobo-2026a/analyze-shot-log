@@ -4,25 +4,33 @@
 目的: ロボットの自動化のため「何 m/s で撃てばどこに落ちるか」「ここに落としたいなら何 m/s か」を
       ログから求められるようにする。
 
+入出力の既定
+  入力 /shot-trial-log/trials.json (-i で変更) / 出力ディレクトリ out (-o で変更)
+
 サブコマンド
   convert     jsonl -> CSV。min/max 速度で絞り込み、速度の低い順に並べ、的に対する誤差も計算
   fit         CSV から着弾モデルを作る (電圧・電流も候補に入れ、LOO交差検証で最良を自動選択)
   predict     速度(や指令値)・電圧から着弾位置を予測
   solve       着弾したい距離から、必要な速度と「指令すべき目標速度」を逆算
   table       速度 -> 着弾位置の表をCSVで出力
-  export-cpp  ファームに組み込める C++ ヘッダ (補間テーブル) を出力
+  export-cpp  C++ ヘッダを出力 (既定は式の係数。--style table で補間テーブル)
+  export-yaml ROS 2 のパラメータ YAML を出力 (ノードが起動時に係数を読む)
 
 座標系: landing_position / cx,cy,cz と同じ座標系 (x=前方, y=横, z=高さ [m])。
         発射位置が原点でない場合は --launcher-x で「発射位置からの距離」に換算できる。
 
-使い方の例
-  python3 launch_model.py convert trials.jsonl -o out --vmin 3.0 --vmax 7.75 \\
-          --target 4:5.0,0.0 --target 5:4.0,0.5,0.58
-  python3 launch_model.py fit out/shots.csv --model-out out/model.json
-  python3 launch_model.py predict --model out/model.json --velocity 6.0 --voltage 18.5
-  python3 launch_model.py solve   --model out/model.json --distance 5.0 --voltage 18.5
-  python3 launch_model.py table   --model out/model.json -o out/table.csv
-  python3 launch_model.py export-cpp --model out/model.json -o out/launch_table.hpp
+使い方の例  (入力は /shot-trial-log/trials.json、出力は out/ が既定。順に実行すると次の入力になる)
+  python3 launch_model.py convert --include-all --target 4:5.0,0.0 --target 5:4.0,0.5,0.58
+  python3 launch_model.py fit --use-all
+  python3 launch_model.py solve   --distance 5.0 --voltage 18.5
+  python3 launch_model.py predict --velocity 6.0 --voltage 18.5
+  python3 launch_model.py export-cpp            # out/launch_formula.hpp
+  python3 launch_model.py export-yaml           # out/launch_model_params.yaml (ROS 2)
+
+  入力・出力先を変える場合
+  python3 launch_model.py convert -i /path/to/trials.jsonl -o result --include-all
+  python3 launch_model.py fit -o result --use-all
+  python3 launch_model.py solve -o result --distance 5.0
 """
 import argparse
 import itertools
@@ -36,29 +44,47 @@ import pandas as pd
 G = 9.81
 DEFAULT_VMIN = 3.00
 DEFAULT_VMAX = 7.75
+DEFAULT_INPUT = '/shot-trial-log/trials.json'   # 入力の既定パス (-i で変更)
+DEFAULT_OUT_DIR = 'out'                          # 出力ディレクトリの既定 (-o で変更)
 
 
 # ======================================================================
 # 読み込み
 # ======================================================================
+def resolve_input(path):
+    """指定パスが無ければ .json <-> .jsonl の取り違えを試す。"""
+    if os.path.isfile(path):
+        return path
+    alt = path + 'l' if path.endswith('.json') else (path[:-1] if path.endswith('.jsonl') else None)
+    if alt and os.path.isfile(alt):
+        print(f'注意: {path} が無いので {alt} を使います')
+        return alt
+    sys.exit(f'入力ファイルが見つかりません: {path}\n'
+             f'  -i / --input で指定してください (既定: {DEFAULT_INPUT})')
+
+
+def read_records(path):
+    """jsonl(1行1件) と json(配列) の両方を読む。"""
+    with open(path, encoding='utf-8') as f:
+        text = f.read().strip()
+    if text.startswith('['):
+        return json.loads(text)
+    return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
 def load_jsonl(paths):
-    """jsonl を読み、shot_id が戻った(または別ファイルになった)所でセッションを区切る。"""
+    """shot_id が戻った(または別ファイルになった)所でセッションを区切る。"""
     rows, sess = [], -1
     for p in paths:
         prev = None
         sess += 1
-        with open(p, encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                r = json.loads(line)
-                if prev is not None and r['shot_id'] <= prev:
-                    sess += 1
-                r['_session'] = sess
-                r['_file'] = os.path.basename(p)
-                prev = r['shot_id']
-                rows.append(r)
+        for r in read_records(p):
+            if prev is not None and r['shot_id'] <= prev:
+                sess += 1
+            r['_session'] = sess
+            r['_file'] = os.path.basename(p)
+            prev = r['shot_id']
+            rows.append(r)
     return rows
 
 
@@ -255,7 +281,9 @@ def build_shots(rows, args):
 
 
 def cmd_convert(args):
-    rows = load_jsonl(args.inputs)
+    paths = [resolve_input(p) for p in ((args.inputs or []) + (args.input or []) or [DEFAULT_INPUT])]
+    print('入力:', ', '.join(paths))
+    rows = load_jsonl(paths)
     os.makedirs(args.out, exist_ok=True)
     df = build_shots(rows, args)
 
@@ -345,7 +373,12 @@ def loo_rmse(X, y, lam):
 
 
 def cmd_fit(args):
-    df = pd.read_csv(args.csv)
+    csv_path = args.csv or os.path.join(args.out, 'shots.csv')
+    if not os.path.isfile(csv_path):
+        sys.exit(f'CSV が見つかりません: {csv_path}\n  先に convert を実行するか、パスを指定してください')
+    model_out = args.model_out or os.path.join(args.out, 'model.json')
+    os.makedirs(os.path.dirname(os.path.abspath(model_out)), exist_ok=True)
+    df = pd.read_csv(csv_path)
     allfired = df[df.fired]
     d = df[df.fired & np.isfinite(df.label_x)].copy()
     if not args.use_all:
@@ -428,12 +461,12 @@ def cmd_fit(args):
         'lateral_mean': float(d.label_y.mean()), 'lateral_std': float(d.label_y.std()),
         'ratio': ratio, 'warnings': warn,
     }
-    with open(args.model_out, 'w', encoding='utf-8') as f:
+    with open(model_out, 'w', encoding='utf-8') as f:
         json.dump(model, f, indent=2, ensure_ascii=False)
-    print(f'\nモデル保存: {args.model_out}')
+    print(f'\nモデル保存: {model_out}')
 
     if not args.no_plot:
-        plot_fit(d, model, m, errs, os.path.splitext(args.model_out)[0] + '_fit.png')
+        plot_fit(d, model, m, errs, os.path.splitext(model_out)[0] + '_fit.png')
 
 
 def plot_fit(d, model, m, loo_err, png):
@@ -468,7 +501,19 @@ def plot_fit(d, model, m, loo_err, png):
 # ======================================================================
 # 予測・逆算
 # ======================================================================
+def model_path(args):
+    return args.model or os.path.join(args.out, 'model.json')
+
+
+def out_file(args, default_name):
+    path = args.file or os.path.join(args.out, default_name)
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    return path
+
+
 def load_model(path):
+    if not os.path.isfile(path):
+        sys.exit(f'モデルが見つかりません: {path}\n  先に fit を実行するか、--model でパスを指定してください')
     with open(path, encoding='utf-8') as f:
         return json.load(f)
 
@@ -496,7 +541,7 @@ def _range_warnings(model, v):
 
 
 def cmd_predict(args):
-    model = load_model(args.model)
+    model = load_model(model_path(args))
     V = args.voltage if args.voltage is not None else model['Vref']
     I = args.current if args.current is not None else model['Iref']
     if args.velocity is not None:
@@ -513,7 +558,7 @@ def cmd_predict(args):
 
 
 def cmd_solve(args):
-    model = load_model(args.model)
+    model = load_model(model_path(args))
     V = args.voltage if args.voltage is not None else model['Vref']
     I = args.current if args.current is not None else model['Iref']
     goal = args.distance + args.launcher_x
@@ -547,9 +592,10 @@ def cmd_solve(args):
 
 
 def cmd_table(args):
-    model = load_model(args.model)
+    model = load_model(model_path(args))
     V = args.voltage if args.voltage is not None else model['Vref']
     I = args.current if args.current is not None else model['Iref']
+    path = out_file(args, 'table.csv')
     vs = np.arange(model['vmin'], model['vmax'] + 1e-9, args.step)
     x = predict_x(model, vs, V, I) - args.launcher_x
     r = ratio_at(model, V)
@@ -557,8 +603,8 @@ def cmd_table(args):
         'belt_velocity': vs, 'command_velocity': vs / r, 'landing_x': x,
         'band90': 1.645 * model['loo_rmse'],
         'in_train_range': (vs >= model['v_train_min']) & (vs <= model['v_train_max']),
-    }).to_csv(args.out, index=False)
-    print(f'書き出し: {args.out}  ({len(vs)} 行, 電圧 {V:.2f} V)')
+    }).to_csv(path, index=False)
+    print(f'書き出し: {path}  ({len(vs)} 行, 電圧 {V:.2f} V)')
 
 
 def raw_coefs(model):
@@ -624,14 +670,42 @@ inline float command_velocity(float v, float voltage = kVref) {{
 }}
 }}  // namespace launch_model
 '''
-    with open(args.out, 'w', encoding='utf-8') as f:
+    with open(args.out_path, 'w', encoding='utf-8') as f:
         f.write(txt)
-    print(f'書き出し: {args.out}  (式: x = {c["c0"]:.4g} + {c["v"]:.4g}*v + {c["v2"]:.4g}*v^2'
+    print(f'書き出し: {args.out_path}  (式: x = {c["c0"]:.4g} + {c["v"]:.4g}*v + {c["v2"]:.4g}*v^2'
           f' + {c["V"]:.4g}*V + {c["I"]:.4g}*I)')
 
 
+def cmd_export_yaml(args):
+    """ROS 2 のパラメータファイル。ノードが起動時に係数を読むので、再fit後も再ビルド不要。"""
+    model = load_model(model_path(args))
+    c = raw_coefs(model)
+    r = model['ratio']
+    path = out_file(args, 'launch_model_params.yaml')
+    fl = lambda x: f'{float(x):.10e}'      # YAML/ROS が float と認識する形式 (1.0e-05)
+    items = [
+        ('coef_c0', c['c0']), ('coef_v', c['v']), ('coef_v2', c['v2']), ('coef_V', c['V']), ('coef_I', c['I']),
+        ('v_min', model['vmin']), ('v_max', model['vmax']),
+        ('voltage_ref', model['Vref']), ('current_ref', model['Iref']),
+        ('train_v_min', model['v_train_min']), ('train_v_max', model['v_train_max']),
+        ('error_band_90', 1.645 * model['loo_rmse']),
+        ('ratio_r0', r['r0']), ('ratio_r1', r['r1']), ('ratio_v_ref', r['Vref']),
+        ('launcher_x', args.launcher_x),
+    ]
+    lines = [f'# 自動生成: launch_model.py export-yaml  (学習 {model["n"]} 発 / LOO誤差 {model["loo_rmse"]:.2f} m / 項 {"+".join(model["terms"])})',
+             '# 着弾位置 x [m] = coef_c0 + coef_v*v + coef_v2*v^2 + coef_V*V + coef_I*I',
+             '#   v: 実ベルト速度[m/s]  V: バッテリー電圧[V]  I: ピーク電流[A]',
+             '# 実速度 = 指令速度 * (ratio_r0 + ratio_r1*(V - ratio_v_ref))',
+             f'{args.node_name}:', '  ros__parameters:']
+    lines += [f'    {k}: {fl(v)}' for k, v in items]
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(lines) + '\n')
+    print(f'書き出し: {path}  (ノード名 {args.node_name})')
+
+
 def cmd_export_cpp(args):
-    model = load_model(args.model)
+    model = load_model(model_path(args))
+    args.out_path = out_file(args, 'launch_formula.hpp' if args.style == 'formula' else 'launch_table.hpp')
     if args.style == 'formula':
         return export_cpp_formula(args, model)
     V = args.voltage if args.voltage is not None else model['Vref']
@@ -678,9 +752,9 @@ inline float command_velocity(float v, float voltage) {{
 }}
 }}  // namespace launch_model
 '''
-    with open(args.out, 'w', encoding='utf-8') as f:
+    with open(args.out_path, 'w', encoding='utf-8') as f:
         f.write(txt)
-    print(f'書き出し: {args.out}')
+    print(f'書き出し: {args.out_path}')
 
 
 # ======================================================================
@@ -688,9 +762,15 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = ap.add_subparsers(dest='cmd', required=True)
 
+    def add_out(p):
+        p.add_argument('-o', '--out', default=DEFAULT_OUT_DIR,
+                       help=f'出力ディレクトリ(既定 {DEFAULT_OUT_DIR})。shots.csv / model.json などはここに置く・ここから読む')
+
     c = sp.add_parser('convert', help='jsonl -> CSV (速度範囲で絞り込み・低い順に並べ替え・誤差計算)')
-    c.add_argument('inputs', nargs='+')
-    c.add_argument('-o', '--out', default='out')
+    c.add_argument('inputs', nargs='*', help='入力ファイル(省略可。-i と同じ)')
+    c.add_argument('-i', '--input', action='append', metavar='PATH',
+                   help=f'入力 json/jsonl のパス。複数指定可 (既定 {DEFAULT_INPUT})')
+    add_out(c)
     c.add_argument('--vmin', type=float, default=DEFAULT_VMIN, help='最小速度 [m/s] (既定 3.00)')
     c.add_argument('--vmax', type=float, default=DEFAULT_VMAX, help='最大速度 [m/s] (既定 7.75)')
     c.add_argument('--sort-by', choices=['target', 'peak'], default='target',
@@ -706,8 +786,9 @@ def main():
     c.set_defaults(func=cmd_convert)
 
     f = sp.add_parser('fit', help='CSV から着弾モデルを作る')
-    f.add_argument('csv')
-    f.add_argument('--model-out', default='out/model.json')
+    f.add_argument('csv', nargs='?', help='入力CSV (省略 = <out>/shots.csv)')
+    add_out(f)
+    f.add_argument('--model-out', help='モデルの保存先 (省略 = <out>/model.json)')
     f.add_argument('--vmin', type=float, default=DEFAULT_VMIN)
     f.add_argument('--vmax', type=float, default=DEFAULT_VMAX)
     f.add_argument('--ridge', type=float, default=0.01, help='リッジ正則化の強さ')
@@ -717,7 +798,8 @@ def main():
     f.set_defaults(func=cmd_fit)
 
     def common(p):
-        p.add_argument('--model', required=True)
+        add_out(p)
+        p.add_argument('--model', help='読み込むモデル (省略 = <out>/model.json)')
         p.add_argument('--voltage', type=float, help='バッテリー電圧 [V] (省略=学習時の中央値)')
         p.add_argument('--current', type=float, help='ピーク電流 [A] (省略=学習時の中央値)')
         p.add_argument('--launcher-x', type=float, default=0.0, help='発射位置の x [m] (距離をここ基準にする)')
@@ -736,17 +818,23 @@ def main():
 
     p = sp.add_parser('table', help='速度 -> 着弾位置の表')
     common(p)
-    p.add_argument('-o', '--out', default='out/table.csv')
+    p.add_argument('--file', help='出力ファイル (省略 = <out>/table.csv)')
     p.add_argument('--step', type=float, default=0.25)
     p.set_defaults(func=cmd_table)
 
-    p = sp.add_parser('export-cpp', help='ファーム用 C++ ヘッダを出力')
+    p = sp.add_parser('export-cpp', help='C++ ヘッダを出力 (既定は式。ROS 2 のノードやファームに組み込む用)')
     common(p)
-    p.add_argument('-o', '--out', default='out/launch_table.hpp')
+    p.add_argument('--file', help='出力ファイル (省略 = <out>/launch_formula.hpp または launch_table.hpp)')
     p.add_argument('--step', type=float, default=0.25, help='(table のとき)速度の刻み幅')
-    p.add_argument('--style', choices=['table', 'formula'], default='table',
-                   help='table=補間テーブル(既定) / formula=式の係数')
+    p.add_argument('--style', choices=['formula', 'table'], default='formula',
+                   help='formula=式の係数(既定) / table=補間テーブル')
     p.set_defaults(func=cmd_export_cpp)
+
+    p = sp.add_parser('export-yaml', help='ROS 2 のパラメータ YAML を出力 (ノードが起動時に係数を読む用)')
+    common(p)
+    p.add_argument('--file', help='出力ファイル (省略 = <out>/launch_model_params.yaml)')
+    p.add_argument('--node-name', default='launch_model_node', help='YAML の先頭に書くノード名')
+    p.set_defaults(func=cmd_export_yaml)
 
     args = ap.parse_args()
     args.func(args)
