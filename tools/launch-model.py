@@ -41,10 +41,24 @@ import sys
 import numpy as np
 import pandas as pd
 
+# スクリプトの場所を基準に親ディレクトリを取得
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+DEFAULT_VMIN = 3.00
+DEFAULT_VMAX = 7.75
+
+DEFAULT_INPUT = os.path.join(
+    BASE_DIR,
+    'logs',
+    'shot-trial-log',
+    'trials.jsonl'
+)
+
+DEFAULT_OUT_DIR = os.path.join(BASE_DIR, 'out')
+
 G = 9.81
 DEFAULT_VMIN = 3.00
 DEFAULT_VMAX = 7.75
-DEFAULT_INPUT = 'shot-trial-log/trials.jsonl'   # 入力の既定パス (-i で変更)
 DEFAULT_OUT_DIR = 'out'                          # 出力ディレクトリの既定 (-o で変更)
 
 

@@ -1,0 +1,15 @@
+# colcon
+build/
+install/
+log/
+
+# launch-model.py の中間出力 (モデルの成果物は launch_model_node/ 側にコミットする)
+tools/out/
+
+# Python
+__pycache__/
+*.pyc
+
+# 解析・記録の出力
+belt_launcher_logs/
+*.log

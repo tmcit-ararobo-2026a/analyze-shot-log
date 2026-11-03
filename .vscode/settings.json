@@ -1,0 +1,14 @@
+{
+    "cmake.sourceDirectory": "/home/kni/ros2_ws/src/analyze-shot-log/belt-launcher-landing-model/launch_model_node",
+    "ROS2.distro": "humble",
+    "python.autoComplete.extraPaths": [
+        "/home/kni/ros2_ws/install/gn10_shot_manager/lib/python3.10/site-packages",
+        "/opt/ros/humble/lib/python3.10/site-packages",
+        "/opt/ros/humble/local/lib/python3.10/dist-packages"
+    ],
+    "python.analysis.extraPaths": [
+        "/home/kni/ros2_ws/install/gn10_shot_manager/lib/python3.10/site-packages",
+        "/opt/ros/humble/lib/python3.10/site-packages",
+        "/opt/ros/humble/local/lib/python3.10/dist-packages"
+    ]
+}

@@ -1,0 +1,22 @@
+# 自動生成: launch_model.py export-yaml  (学習 22 発 / LOO誤差 1.29 m / 項 v)
+# 着弾位置 x [m] = coef_c0 + coef_v*v + coef_v2*v^2 + coef_V*V + coef_I*I
+#   v: 実ベルト速度[m/s]  V: バッテリー電圧[V]  I: ピーク電流[A]
+# 実速度 = 指令速度 * (ratio_r0 + ratio_r1*(V - ratio_v_ref))
+launch_model_node:
+  ros__parameters:
+    coef_c0: -7.9109592023e-01
+    coef_v: 1.2623392994e+00
+    coef_v2: 0.0000000000e+00
+    coef_V: 0.0000000000e+00
+    coef_I: 0.0000000000e+00
+    v_min: 3.0000000000e+00
+    v_max: 7.7500000000e+00
+    voltage_ref: 1.8990000000e+01
+    current_ref: 8.7400000000e+01
+    train_v_min: 2.1600000000e+00
+    train_v_max: 7.6200000000e+00
+    error_band_90: 2.1243438031e+00
+    ratio_r0: 1.0100000000e+00
+    ratio_r1: 0.0000000000e+00
+    ratio_v_ref: 1.8990000000e+01
+    launcher_x: 0.0000000000e+00
