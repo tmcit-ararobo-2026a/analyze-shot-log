@@ -44,7 +44,7 @@ import pandas as pd
 G = 9.81
 DEFAULT_VMIN = 3.00
 DEFAULT_VMAX = 7.75
-DEFAULT_INPUT = '/shot-trial-log/trials.json'   # 入力の既定パス (-i で変更)
+DEFAULT_INPUT = 'shot-trial-log/trials.jsonl'   # 入力の既定パス (-i で変更)
 DEFAULT_OUT_DIR = 'out'                          # 出力ディレクトリの既定 (-o で変更)
 
 
